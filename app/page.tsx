@@ -74,7 +74,10 @@ export default function ManagerDashboard() {
     const std = parseFloat(coffeeStandard) || 10;
     const ext = parseFloat(coffeeExtra) || 0;
     const total = coffeeOperator === '+' ? std + ext : std - ext;
-    await supabase.from('daily_stats').upsert({ date: selectedDate, coffee_standard: std, coffee_extra: ext, coffee_operator: coffeeOperator, coffee_total: total, is_confirmed: true });
+    await supabase.from('daily_stats').upsert({ 
+        date: selectedDate, coffee_standard: std, coffee_extra: ext, coffee_operator: coffeeOperator,
+        coffee_total: total, is_confirmed: true 
+    });
     setIsCoffeeConfirmed(true);
     fetchData();
   };
@@ -85,50 +88,78 @@ export default function ManagerDashboard() {
     if (!timeStr) return "";
     const [hours, minutes] = timeStr.split(':');
     const h = parseInt(hours);
-    const ampm = h >= 12 ? 'pm' : 'am';
-    return `${h % 12 || 12}:${minutes} ${ampm}`;
+    return `${h % 12 || 12}:${minutes} ${h >= 12 ? 'pm' : 'am'}`;
   };
 
   const submitAttendance = async (shift: any, type: string) => {
-    if ((type === 'OTHER' || type === 'LATE' || type === 'NO_SHOW') && !formNote.trim()) {
-      return alert("Note is mandatory.");
-    }
+    if ((type === 'OTHER' || type === 'LATE' || type === 'NO_SHOW') && !formNote.trim()) return alert("Note is mandatory.");
     const { error } = await supabase.from('attendance_logs').insert({
-      shift_id: shift.Id.toString(),
-      staff_name: shift._DPMetaData?.EmployeeInfo?.DisplayName,
-      action_type: type,
-      notes: formNote,
+      shift_id: shift.Id.toString(), staff_name: shift._DPMetaData?.EmployeeInfo?.DisplayName,
+      action_type: type, notes: formNote,
       override_start: type === 'EDIT_START' ? formatTimeString(formTime) : null,
       override_end: type === 'EDIT_END' ? formatTimeString(formTime) : null
     });
     if (!error) { setActiveForm(null); setFormNote(""); setFormTime(""); fetchData(); }
   };
 
-  // --- TIME DISPLAY WITH GUARANTEED STRIKE-THROUGH ---
+  // --- EXPORT CSV WITH COFFEE DATA ---
+  const exportToCSV = () => {
+    const headers = ["Date", "Name", "Original Start", "Original End", "Actual Start", "Actual End", "Status", "Notes", "Daily Coffee (kg)"];
+    
+    // Sort shifts by date for a clean report
+    const sortedShifts = [...shifts].sort((a,b) => (a.StartTime || 0) - (b.StartTime || 0));
+
+    const rows = sortedShifts.map(s => {
+      const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
+      const sEdit = logs.find(l => l.action_type === 'EDIT_START');
+      const eEdit = logs.find(l => l.action_type === 'EDIT_END');
+      const status = getLatestLog(s.Id);
+      
+      // Calculate date and find confirmed coffee for that date
+      const dateObj = new Date(s.StartTime * 1000);
+      const dateStr = dateObj.toISOString().split('T')[0];
+      const coffeeUsed = coffeeStats.find(c => c.date === dateStr && c.is_confirmed)?.coffee_total || 0;
+
+      const origS = dateObj.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      const origE = new Date(s.EndTime * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      
+      return [
+        dateObj.toLocaleDateString(),
+        `"${s._DPMetaData?.EmployeeInfo?.DisplayName}"`, // Wrapped in quotes for CSV safety
+        origS, origE,
+        sEdit?.override_start || origS,
+        eEdit?.override_end || origE,
+        status?.action_type || "PENDING",
+        `"${(status?.notes || "").replace(/"/g, '""')}"`, // Handle quotes inside notes
+        coffeeUsed.toFixed(1)
+      ].join(",");
+    });
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Martin_Place_Log_Export_${selectedDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+  };
+
   const renderTimeDisplay = (s: any, isCompact = false) => {
-    const logsForShift = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
-    const startEdit = logsForShift.find(l => l.action_type === 'EDIT_START');
-    const endEdit = logsForShift.find(l => l.action_type === 'EDIT_END');
+    const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
+    const startLog = logs.find(l => l.action_type === 'EDIT_START');
+    const endLog = logs.find(l => l.action_type === 'EDIT_END');
 
     const origStart = new Date(s.StartTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
     const origEnd = new Date(s.EndTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 
     return (
       <div className={`${isCompact ? 'text-[10px]' : 'text-lg'} font-bold flex flex-wrap items-center gap-1 print:text-black`}>
-        {/* START TIME */}
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="flex items-center gap-1 group">
-          {startEdit ? (
-            <><span className="line-through text-slate-300 decoration-slate-400 font-normal">{origStart}</span> <span className="text-blue-600 font-black">({startEdit.override_start})</span></>
-          ) : <span className="text-orange-600 group-hover:underline">{origStart}</span>}
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="hover:underline text-left">
+          {startLog ? <><span className="line-through text-slate-300 decoration-slate-400">{origStart}</span> <span className="text-blue-600 font-black">({startLog.override_start})</span></> : <span className="text-orange-600 print:text-black">{origStart}</span>}
         </button>
-        
         <span className="text-slate-300">—</span>
-        
-        {/* END TIME */}
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="flex items-center gap-1 group">
-          {endEdit ? (
-            <><span className="line-through text-slate-300 decoration-slate-400 font-normal">{origEnd}</span> <span className="text-blue-600 font-black">({endEdit.override_end})</span></>
-          ) : <span className="text-orange-600 group-hover:underline">{origEnd}</span>}
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="hover:underline text-left">
+          {endLog ? <><span className="line-through text-slate-300 decoration-slate-400">{origEnd}</span> <span className="text-blue-600 font-black">({endLog.override_end})</span></> : <span className="text-orange-600 print:text-black">{origEnd}</span>}
         </button>
       </div>
     );
@@ -200,7 +231,7 @@ export default function ManagerDashboard() {
           {activeInRow && (
             <div className="mt-4 p-4 bg-slate-50 rounded-xl border-2 border-slate-200 print:hidden">
                <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
-                  <p className="text-[10px] font-black text-slate-500 uppercase text-left">Correction Menu</p>
+                  <p className="text-[10px] font-black text-slate-500 uppercase">Edit Record For Day</p>
                   {renderActionButtons(activeInRow, getLatestLog(activeInRow.Id))}
                </div>
                {renderEditForm(activeInRow)}
@@ -221,9 +252,9 @@ export default function ManagerDashboard() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 pb-20 font-sans print:bg-white print:p-0">
       <div className="max-w-5xl mx-auto">
-        <header className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col lg:flex-row justify-between items-center gap-6 print:border-none print:shadow-none print:mb-2">
+        <header className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col lg:flex-row justify-between items-center gap-6 print:hidden">
           <div className="flex-1 text-left">
-            <h1 className="text-3xl font-black uppercase italic tracking-tighter print:text-xl">Martin Place Log</h1>
+            <h1 className="text-3xl font-black uppercase italic tracking-tighter">Martin Place Log</h1>
             <div className="flex gap-2 mt-4 print:hidden">
               <button onClick={() => setViewMode('daily')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'daily' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Daily View</button>
               <button onClick={() => setViewMode('weekly')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'weekly' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Weekly View</button>
@@ -235,12 +266,12 @@ export default function ManagerDashboard() {
               <div className={`p-3 rounded-2xl flex items-center gap-3 transition-colors ${isCoffeeConfirmed ? 'bg-green-50 border-2 border-green-200' : 'bg-orange-50 border border-orange-200'}`}>
                   <div className="flex flex-col items-center">
                       <span className="text-[8px] font-black text-slate-400 uppercase">Standard</span>
-                      <input disabled={isCoffeeConfirmed} type="number" placeholder="10" value={coffeeStandard} onChange={e => {setCoffeeStandard(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none" />
+                      <input disabled={isCoffeeConfirmed} type="number" placeholder="10" value={coffeeStandard} onChange={e => {setCoffeeStandard(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none outline-none" />
                   </div>
                   <button disabled={isCoffeeConfirmed} onClick={() => {setCoffeeOperator(coffeeOperator === '+' ? '-' : '+'); setIsCoffeeConfirmed(false);}} className={`w-8 h-8 rounded-full font-black text-lg flex items-center justify-center transition-colors ${coffeeOperator === '+' ? 'bg-orange-500 text-white' : 'bg-blue-500 text-white'}`}>{coffeeOperator}</button>
                   <div className="flex flex-col items-center">
                       <span className="text-[8px] font-black text-slate-400 uppercase">Extra</span>
-                      <input disabled={isCoffeeConfirmed} type="number" value={coffeeExtra} placeholder="0" onChange={e => {setCoffeeExtra(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none" />
+                      <input disabled={isCoffeeConfirmed} type="number" value={coffeeExtra} placeholder="0" onChange={e => {setCoffeeExtra(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none outline-none" />
                   </div>
                   <button onClick={handleConfirmCoffee} className={`px-4 py-2 rounded-xl font-black text-[10px] uppercase shadow-md transition-all ${isCoffeeConfirmed ? 'bg-green-600 text-white' : 'bg-orange-600 text-white hover:scale-105'}`}>{isCoffeeConfirmed ? 'Confirmed' : 'Confirm'}</button>
               </div>
@@ -252,8 +283,10 @@ export default function ManagerDashboard() {
         {viewMode === 'weekly' && (
           <div className="animate-in slide-in-from-top-4 duration-500">
             <div className="flex justify-end gap-2 mb-4 print:hidden">
-                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-orange-700 shadow-lg">Print Report</button>
+                <button onClick={exportToCSV} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-slate-200">Export CSV</button>
+                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 shadow-md">Print Report</button>
             </div>
+            
             <div className="mb-4 bg-slate-800 text-white p-6 rounded-3xl shadow-lg flex justify-between items-center print:bg-white print:text-black print:p-2 print:border-b print:shadow-none">
                <div className="text-left"><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Business Week</p>
                   <p className="text-lg font-bold">{new Date(weekRange.mon).toLocaleDateString()} — {new Date(weekRange.sun).toLocaleDateString()}</p>
