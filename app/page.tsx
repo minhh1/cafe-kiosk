@@ -52,23 +52,10 @@ export default function ManagerDashboard() {
     try {
       const rosterRes = await fetch(`/api/roster?startDate=${startDate}&endDate=${endDate}`);
       const deputyData = await rosterRes.json();
-      
-      const { data: manualData } = await supabase.from('manual_shifts').select('*').gte('shift_date', startDate).lte('shift_date', endDate);
       const { data: logs } = await supabase.from('attendance_logs').select('*').order('created_at', { ascending: false });
       const { data: coffee } = await supabase.from('daily_stats').select('*').gte('date', range.mon).lte('date', range.sun);
 
-      const formattedManual = (manualData || []).map(m => ({
-        Id: `manual-${m.id}`,
-        IsManual: true,
-        DisplayName: m.staff_name,
-        StartTime: m.start_time_str,
-        EndTime: m.end_time_str,
-        Team: m.team,
-        Date: m.shift_date,
-        _DPMetaData: { EmployeeInfo: { DisplayName: m.staff_name }, OperationalUnitInfo: { OperationalUnitName: m.team } }
-      }));
-
-      setShifts([...(Array.isArray(deputyData) ? deputyData : []), ...formattedManual]);
+      setShifts(Array.isArray(deputyData) ? deputyData : []);
       setAttendanceLogs(logs || []);
       setCoffeeStats(coffee || []);
       
@@ -87,10 +74,7 @@ export default function ManagerDashboard() {
     const std = parseFloat(coffeeStandard) || 10;
     const ext = parseFloat(coffeeExtra) || 0;
     const total = coffeeOperator === '+' ? std + ext : std - ext;
-    await supabase.from('daily_stats').upsert({ 
-      date: selectedDate, coffee_standard: std, coffee_extra: ext, 
-      coffee_operator: coffeeOperator, coffee_total: total, is_confirmed: true 
-    });
+    await supabase.from('daily_stats').upsert({ date: selectedDate, coffee_standard: std, coffee_extra: ext, coffee_operator: coffeeOperator, coffee_total: total, is_confirmed: true });
     setIsCoffeeConfirmed(true);
     fetchData();
   };
@@ -115,40 +99,61 @@ export default function ManagerDashboard() {
     if (!error) { setActiveForm(null); setFormNote(""); setFormTime(""); fetchData(); }
   };
 
-  // --- TIME DISPLAY WITH STRIKE-THROUGH LOGIC ---
+  // --- EXPORT TO CSV FUNCTION ---
+  const exportToCSV = () => {
+    const rows = [["Date", "Name", "Original Start", "Original End", "Actual Start", "Actual End", "Status", "Notes"]];
+    
+    shifts.forEach(s => {
+        const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
+        const startLog = logs.find(l => l.action_type === 'EDIT_START');
+        const endLog = logs.find(l => l.action_type === 'EDIT_END');
+        const statusLog = getLatestLog(s.Id);
+        
+        const date = new Date(s.StartTime * 1000).toLocaleDateString();
+        const name = s._DPMetaData?.EmployeeInfo?.DisplayName;
+        const origS = new Date(s.StartTime * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const origE = new Date(s.EndTime * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+        rows.push([
+            date, name, origS, origE, 
+            startLog?.override_start || origS, 
+            endLog?.override_end || origE,
+            statusLog?.action_type || "PENDING",
+            statusLog?.notes || ""
+        ]);
+    });
+
+    const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Martin_Place_Log_Week_${selectedDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+  };
+
   const renderTimeDisplay = (s: any, isCompact = false) => {
     const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
     const startLog = logs.find(l => l.action_type === 'EDIT_START');
     const endLog = logs.find(l => l.action_type === 'EDIT_END');
-
-    const format = (val: any) => typeof val === 'number' 
-      ? new Date(val * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase()
-      : val;
-
-    const origStart = format(s.StartTime);
-    const origEnd = format(s.EndTime);
+    const origStart = new Date(s.StartTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+    const origEnd = new Date(s.EndTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 
     return (
-      <div className={`${isCompact ? 'text-[10px]' : 'text-lg'} font-bold flex flex-wrap items-center gap-1`}>
-        {/* START TIME */}
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="flex items-center gap-1">
-          {startLog ? (
-            <><span className="line-through decoration-slate-400 text-slate-300 font-normal">{origStart}</span> <span className="text-blue-600 font-black">({startLog.override_start})</span></>
-          ) : <span className="text-orange-600">{origStart}</span>}
+      <div className={`${isCompact ? 'text-[10px]' : 'text-lg'} font-bold flex flex-wrap items-center gap-1 print:text-black`}>
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="hover:underline text-left print:no-underline">
+          {startLog ? <><span className="line-through text-slate-300 print:hidden">{origStart}</span> <span className="text-blue-600 print:text-black">({startLog.override_start})</span></> : <span className="text-orange-600 print:text-black">{origStart}</span>}
         </button>
         <span className="text-slate-300">—</span>
-        {/* END TIME */}
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="flex items-center gap-1">
-          {endLog ? (
-            <><span className="line-through decoration-slate-400 text-slate-300 font-normal">{origEnd}</span> <span className="text-blue-600 font-black">({endLog.override_end})</span></>
-          ) : <span className="text-orange-600">{origEnd}</span>}
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="hover:underline text-left print:no-underline">
+          {endLog ? <><span className="text-slate-900">{origEnd}</span> <span className="text-blue-600 print:text-black">({endLog.override_end})</span></> : <span className="text-orange-600 print:text-black">{origEnd}</span>}
         </button>
       </div>
     );
   };
 
   const renderActionButtons = (s: any, currentLog: any) => (
-    <div className="flex flex-wrap gap-1">
+    <div className="flex flex-wrap gap-1 print:hidden">
       {['ON_TIME', 'LATE', 'NO_SHOW', 'OTHER'].map(type => (
         <button key={type} onClick={(e) => { e.stopPropagation(); type !== 'ON_TIME' ? setActiveForm({id: s.Id, type}) : submitAttendance(s, type)}} 
           className={`px-3 py-2 rounded-lg font-bold text-[9px] uppercase transition-all ${currentLog?.action_type === type ? STATUS_COLORS[type].bg + " text-white scale-110 shadow-lg" : "bg-slate-100 text-slate-400 opacity-40 hover:opacity-100"}`}>
@@ -161,13 +166,13 @@ export default function ManagerDashboard() {
   const renderEditForm = (s: any) => {
     if (!activeForm || activeForm.id !== s.Id) return null;
     return (
-      <div className="mt-4 p-5 bg-slate-800 rounded-2xl shadow-xl animate-in zoom-in-95 text-left">
-        <h4 className="text-orange-400 text-[10px] font-bold uppercase mb-4 tracking-widest">{activeForm.type.replace('_', ' ')} Details</h4>
+      <div className="mt-4 p-5 bg-slate-800 rounded-2xl shadow-xl animate-in zoom-in-95 text-left print:hidden">
+        <h4 className="text-orange-400 text-[10px] font-bold uppercase mb-4 tracking-widest">{activeForm.type.replace('_', ' ')}</h4>
         <div className="flex flex-col gap-3">
           {activeForm.type.startsWith('EDIT') ? <input type="time" className="p-4 rounded-xl bg-white text-slate-900 font-black text-2xl" value={formTime} onChange={e => setFormTime(e.target.value)} /> 
           : <textarea autoFocus placeholder="Mandatory Note..." className="p-4 rounded-xl bg-slate-700 text-white h-20" value={formNote} onChange={e => setFormNote(e.target.value)} />}
           <div className="flex gap-2">
-            <button onClick={() => submitAttendance(s, activeForm.type)} className="flex-1 bg-white text-slate-900 p-3 rounded-xl font-black uppercase text-xs">Save</button>
+            <button onClick={() => submitAttendance(s, activeForm.type)} className="flex-1 bg-white text-slate-900 p-3 rounded-xl font-black uppercase text-xs">Save Change</button>
             <button onClick={() => setActiveForm(null)} className="px-6 bg-slate-600 text-white rounded-xl font-bold text-xs uppercase">Cancel</button>
           </div>
         </div>
@@ -186,23 +191,18 @@ export default function ManagerDashboard() {
     return Object.entries(grouped).map(([name, staffShifts]) => {
       const activeInRow = staffShifts.find(s => activeForm?.id === s.Id);
       return (
-        <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6">
-          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter">{name}</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3 mb-2">
-            {staffShifts.sort((a,b) => {
-                const tA = a.IsManual ? new Date(a.Date).getTime() : a.StartTime;
-                const tB = b.IsManual ? new Date(b.Date).getTime() : b.StartTime;
-                return tA - tB;
-            }).map(s => {
+        <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6 print:border-none print:shadow-none print:mb-2">
+          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter print:text-base">{name}</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3 mb-2 print:grid-cols-7 print:gap-1">
+            {staffShifts.sort((a,b) => a.StartTime - b.StartTime).map(s => {
               const log = getLatestLog(s.Id);
               const theme = log ? STATUS_COLORS[log.action_type] : null;
               const isSel = activeForm?.id === s.Id;
-              const dateObj = s.IsManual ? new Date(s.Date) : new Date(s.StartTime * 1000);
               return (
                 <div key={s.Id} onClick={() => setActiveForm({id: s.Id, type: 'MARK'})}
-                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[140px] cursor-pointer transition-all ${isSel ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
+                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[140px] transition-all print:min-h-0 print:p-1 print:border-slate-100 ${isSel ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10 print:ring-0 print:scale-100' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
                   <div>
-                    <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-2">{dateObj.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' })}</p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-2">{new Date(s.StartTime * 1000).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' })}</p>
                     {renderTimeDisplay(s, true)}
                   </div>
                   {log && theme && (
@@ -216,7 +216,7 @@ export default function ManagerDashboard() {
             })}
           </div>
           {activeInRow && (
-            <div className="mt-4 p-4 bg-slate-50 rounded-xl border-2 border-slate-200">
+            <div className="mt-4 p-4 bg-slate-50 rounded-xl border-2 border-slate-200 print:hidden">
                <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
                   <p className="text-[10px] font-black text-slate-500 uppercase">Updating Record</p>
                   {renderActionButtons(activeInRow, getLatestLog(activeInRow.Id))}
@@ -237,18 +237,18 @@ export default function ManagerDashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 pb-20 font-sans">
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 pb-20 font-sans print:bg-white print:p-0">
       <div className="max-w-5xl mx-auto">
-        <header className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col lg:flex-row justify-between items-center gap-6">
+        <header className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col lg:flex-row justify-between items-center gap-6 print:border-none print:shadow-none print:mb-2">
           <div className="flex-1 text-left">
-            <h1 className="text-3xl font-black uppercase italic tracking-tighter">Martin Place Log</h1>
-            <div className="flex gap-2 mt-4">
+            <h1 className="text-3xl font-black uppercase italic tracking-tighter print:text-xl">Martin Place Log</h1>
+            <div className="flex gap-2 mt-4 print:hidden">
               <button onClick={() => setViewMode('daily')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'daily' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Daily View</button>
               <button onClick={() => setViewMode('weekly')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'weekly' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Weekly View</button>
             </div>
           </div>
           
-          <div className="flex flex-col sm:flex-row items-center gap-4">
+          <div className="flex flex-col sm:flex-row items-center gap-4 print:hidden">
             {viewMode === 'daily' && (
               <div className={`p-3 rounded-2xl flex items-center gap-3 transition-colors ${isCoffeeConfirmed ? 'bg-green-50 border-2 border-green-200' : 'bg-orange-50 border border-orange-200'}`}>
                   <div className="flex flex-col items-center">
@@ -263,27 +263,33 @@ export default function ManagerDashboard() {
                   <button onClick={handleConfirmCoffee} className={`px-4 py-2 rounded-xl font-black text-[10px] uppercase shadow-md transition-all ${isCoffeeConfirmed ? 'bg-green-600 text-white' : 'bg-orange-600 text-white hover:scale-105'}`}>{isCoffeeConfirmed ? 'Confirmed' : 'Confirm'}</button>
               </div>
             )}
-            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="p-3 border-2 border-slate-200 rounded-2xl font-bold bg-white text-slate-900" />
+            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="p-3 border-2 border-slate-200 rounded-2xl font-bold bg-white text-slate-900 shadow-sm" />
           </div>
         </header>
 
         {viewMode === 'weekly' && (
           <div className="animate-in slide-in-from-top-4 duration-500">
-            <div className="mb-4 bg-slate-800 text-white p-6 rounded-3xl shadow-lg flex justify-between items-center">
+            {/* EXPORT BUTTONS */}
+            <div className="flex justify-end gap-2 mb-4 print:hidden">
+                <button onClick={exportToCSV} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-slate-200">Export CSV</button>
+                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-orange-700 shadow-lg">Print Report (PDF)</button>
+            </div>
+
+            <div className="mb-4 bg-slate-800 text-white p-6 rounded-3xl shadow-lg flex justify-between items-center print:bg-white print:text-black print:p-2 print:border-b print:shadow-none">
                <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Business Week</p>
                   <p className="text-lg font-bold">{new Date(weekRange.mon).toLocaleDateString()} — {new Date(weekRange.sun).toLocaleDateString()}</p>
                </div>
                <div className="text-right"><p className="text-[10px] font-black text-orange-400 uppercase mb-1">Total Weekly Coffee</p>
-                  <p className="text-4xl font-black text-orange-500">{confirmedWeeklyCoffee.toFixed(1)} <span className="text-sm">KG</span></p>
+                  <p className="text-4xl font-black text-orange-500 print:text-black">{confirmedWeeklyCoffee.toFixed(1)} <span className="text-sm">KG</span></p>
                </div>
             </div>
-            <div className="grid grid-cols-7 gap-2 mb-8 px-2">
+            <div className="grid grid-cols-7 gap-2 mb-8 px-2 print:mb-2 print:gap-1">
                 {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((day, idx) => {
                     const date = new Date(weekRange.mon); date.setDate(date.getDate() + idx);
                     return (
                         <div key={day} className="text-center">
                             <p className="text-[8px] font-black text-slate-400 uppercase mb-1">{day}</p>
-                            <div className="bg-white border border-slate-200 rounded-lg p-2 shadow-sm font-black text-xs text-slate-700">{getCoffeeForDate(date.toISOString().split('T')[0])}</div>
+                            <div className="bg-white border border-slate-200 rounded-lg p-2 shadow-sm font-black text-xs text-slate-700 print:border-slate-100">{getCoffeeForDate(date.toISOString().split('T')[0])}</div>
                         </div>
                     )
                 })}
@@ -291,9 +297,10 @@ export default function ManagerDashboard() {
           </div>
         )}
 
-        <div className="mb-10 text-left">
-          <h2 className="text-xs font-black text-white bg-slate-800 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest">FOH Team</h2>
-          <div className="border-t-4 border-slate-800 pt-6">
+        {/* FOH TEAM */}
+        <div className="mb-10 text-left print:mb-4">
+          <h2 className="text-xs font-black text-white bg-slate-800 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest print:text-black print:bg-transparent print:p-0 print:border-b print:w-full">Front of House</h2>
+          <div className="border-t-4 border-slate-800 pt-6 print:border-none print:pt-2">
             {viewMode === 'daily' ? shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "FOH Team").map(s => (
                 <div key={s.Id} className={`bg-white p-5 rounded-2xl shadow-sm border mb-4 transition-all ${getLatestLog(s.Id) ? STATUS_COLORS[getLatestLog(s.Id).action_type].border : 'border-slate-200'}`}>
                     <div className="flex justify-between items-center gap-4 text-left">
@@ -307,9 +314,10 @@ export default function ManagerDashboard() {
           </div>
         </div>
         
-        <div className="text-left">
-          <h2 className="text-xs font-black text-white bg-orange-600 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest">BOH Team</h2>
-          <div className="border-t-4 border-orange-600 pt-6">
+        {/* BOH TEAM */}
+        <div className="text-left print:mt-10">
+          <h2 className="text-xs font-black text-white bg-orange-600 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest print:text-black print:bg-transparent print:p-0 print:border-b print:w-full">Back of House</h2>
+          <div className="border-t-4 border-orange-600 pt-6 print:border-none print:pt-2">
             {viewMode === 'daily' ? shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "BOH Team").map(s => (
                 <div key={s.Id} className={`bg-white p-5 rounded-2xl shadow-sm border mb-4 transition-all ${getLatestLog(s.Id) ? STATUS_COLORS[getLatestLog(s.Id).action_type].border : 'border-slate-200'}`}>
                     <div className="flex justify-between items-center gap-4 text-left">
