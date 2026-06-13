@@ -85,68 +85,50 @@ export default function ManagerDashboard() {
     if (!timeStr) return "";
     const [hours, minutes] = timeStr.split(':');
     const h = parseInt(hours);
-    return `${h % 12 || 12}:${minutes} ${h >= 12 ? 'pm' : 'am'}`;
+    const ampm = h >= 12 ? 'pm' : 'am';
+    return `${h % 12 || 12}:${minutes} ${ampm}`;
   };
 
   const submitAttendance = async (shift: any, type: string) => {
-    if ((type === 'OTHER' || type === 'LATE' || type === 'NO_SHOW') && !formNote.trim()) return alert("Note is mandatory.");
+    if ((type === 'OTHER' || type === 'LATE' || type === 'NO_SHOW') && !formNote.trim()) {
+      return alert("Note is mandatory.");
+    }
     const { error } = await supabase.from('attendance_logs').insert({
-      shift_id: shift.Id.toString(), staff_name: shift._DPMetaData?.EmployeeInfo?.DisplayName,
-      action_type: type, notes: formNote,
+      shift_id: shift.Id.toString(),
+      staff_name: shift._DPMetaData?.EmployeeInfo?.DisplayName,
+      action_type: type,
+      notes: formNote,
       override_start: type === 'EDIT_START' ? formatTimeString(formTime) : null,
       override_end: type === 'EDIT_END' ? formatTimeString(formTime) : null
     });
     if (!error) { setActiveForm(null); setFormNote(""); setFormTime(""); fetchData(); }
   };
 
-  // --- EXPORT TO CSV FUNCTION ---
-  const exportToCSV = () => {
-    const rows = [["Date", "Name", "Original Start", "Original End", "Actual Start", "Actual End", "Status", "Notes"]];
-    
-    shifts.forEach(s => {
-        const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
-        const startLog = logs.find(l => l.action_type === 'EDIT_START');
-        const endLog = logs.find(l => l.action_type === 'EDIT_END');
-        const statusLog = getLatestLog(s.Id);
-        
-        const date = new Date(s.StartTime * 1000).toLocaleDateString();
-        const name = s._DPMetaData?.EmployeeInfo?.DisplayName;
-        const origS = new Date(s.StartTime * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-        const origE = new Date(s.EndTime * 1000).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-
-        rows.push([
-            date, name, origS, origE, 
-            startLog?.override_start || origS, 
-            endLog?.override_end || origE,
-            statusLog?.action_type || "PENDING",
-            statusLog?.notes || ""
-        ]);
-    });
-
-    const csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Martin_Place_Log_Week_${selectedDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
-  };
-
+  // --- TIME DISPLAY WITH GUARANTEED STRIKE-THROUGH ---
   const renderTimeDisplay = (s: any, isCompact = false) => {
-    const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
-    const startLog = logs.find(l => l.action_type === 'EDIT_START');
-    const endLog = logs.find(l => l.action_type === 'EDIT_END');
+    const logsForShift = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
+    const startEdit = logsForShift.find(l => l.action_type === 'EDIT_START');
+    const endEdit = logsForShift.find(l => l.action_type === 'EDIT_END');
+
     const origStart = new Date(s.StartTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
     const origEnd = new Date(s.EndTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 
     return (
       <div className={`${isCompact ? 'text-[10px]' : 'text-lg'} font-bold flex flex-wrap items-center gap-1 print:text-black`}>
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="hover:underline text-left print:no-underline">
-          {startLog ? <><span className="line-through text-slate-300 print:hidden">{origStart}</span> <span className="text-blue-600 print:text-black">({startLog.override_start})</span></> : <span className="text-orange-600 print:text-black">{origStart}</span>}
+        {/* START TIME */}
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="flex items-center gap-1 group">
+          {startEdit ? (
+            <><span className="line-through text-slate-300 decoration-slate-400 font-normal">{origStart}</span> <span className="text-blue-600 font-black">({startEdit.override_start})</span></>
+          ) : <span className="text-orange-600 group-hover:underline">{origStart}</span>}
         </button>
+        
         <span className="text-slate-300">—</span>
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="hover:underline text-left print:no-underline">
-          {endLog ? <><span className="text-slate-900">{origEnd}</span> <span className="text-blue-600 print:text-black">({endLog.override_end})</span></> : <span className="text-orange-600 print:text-black">{origEnd}</span>}
+        
+        {/* END TIME */}
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="flex items-center gap-1 group">
+          {endEdit ? (
+            <><span className="line-through text-slate-300 decoration-slate-400 font-normal">{origEnd}</span> <span className="text-blue-600 font-black">({endEdit.override_end})</span></>
+          ) : <span className="text-orange-600 group-hover:underline">{origEnd}</span>}
         </button>
       </div>
     );
@@ -167,7 +149,7 @@ export default function ManagerDashboard() {
     if (!activeForm || activeForm.id !== s.Id) return null;
     return (
       <div className="mt-4 p-5 bg-slate-800 rounded-2xl shadow-xl animate-in zoom-in-95 text-left print:hidden">
-        <h4 className="text-orange-400 text-[10px] font-bold uppercase mb-4 tracking-widest">{activeForm.type.replace('_', ' ')}</h4>
+        <h4 className="text-orange-400 text-[10px] font-bold uppercase mb-4 tracking-widest">{activeForm.type.replace('_', ' ')} Details</h4>
         <div className="flex flex-col gap-3">
           {activeForm.type.startsWith('EDIT') ? <input type="time" className="p-4 rounded-xl bg-white text-slate-900 font-black text-2xl" value={formTime} onChange={e => setFormTime(e.target.value)} /> 
           : <textarea autoFocus placeholder="Mandatory Note..." className="p-4 rounded-xl bg-slate-700 text-white h-20" value={formNote} onChange={e => setFormNote(e.target.value)} />}
@@ -192,7 +174,7 @@ export default function ManagerDashboard() {
       const activeInRow = staffShifts.find(s => activeForm?.id === s.Id);
       return (
         <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6 print:border-none print:shadow-none print:mb-2">
-          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter print:text-base">{name}</h3>
+          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter print:text-base print:text-left">{name}</h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3 mb-2 print:grid-cols-7 print:gap-1">
             {staffShifts.sort((a,b) => a.StartTime - b.StartTime).map(s => {
               const log = getLatestLog(s.Id);
@@ -200,7 +182,7 @@ export default function ManagerDashboard() {
               const isSel = activeForm?.id === s.Id;
               return (
                 <div key={s.Id} onClick={() => setActiveForm({id: s.Id, type: 'MARK'})}
-                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[140px] transition-all print:min-h-0 print:p-1 print:border-slate-100 ${isSel ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10 print:ring-0 print:scale-100' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
+                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[140px] cursor-pointer transition-all print:min-h-0 print:p-1 print:border-slate-100 ${isSel ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10 print:ring-0 print:scale-100' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
                   <div>
                     <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-2">{new Date(s.StartTime * 1000).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' })}</p>
                     {renderTimeDisplay(s, true)}
@@ -208,7 +190,7 @@ export default function ManagerDashboard() {
                   {log && theme && (
                     <div className={`mt-2 pt-2 border-t ${theme.border}`}>
                       <p className={`text-[9px] font-black ${theme.text} uppercase leading-none mb-1`}>{log.action_type}</p>
-                      {log.notes && <p className="text-[8px] text-slate-500 italic leading-tight line-clamp-2">"{log.notes}"</p>}
+                      {log.notes && <p className="text-[8px] text-slate-500 italic leading-tight line-clamp-3">"{log.notes}"</p>}
                     </div>
                   )}
                 </div>
@@ -218,7 +200,7 @@ export default function ManagerDashboard() {
           {activeInRow && (
             <div className="mt-4 p-4 bg-slate-50 rounded-xl border-2 border-slate-200 print:hidden">
                <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
-                  <p className="text-[10px] font-black text-slate-500 uppercase">Updating Record</p>
+                  <p className="text-[10px] font-black text-slate-500 uppercase text-left">Correction Menu</p>
                   {renderActionButtons(activeInRow, getLatestLog(activeInRow.Id))}
                </div>
                {renderEditForm(activeInRow)}
@@ -269,14 +251,11 @@ export default function ManagerDashboard() {
 
         {viewMode === 'weekly' && (
           <div className="animate-in slide-in-from-top-4 duration-500">
-            {/* EXPORT BUTTONS */}
             <div className="flex justify-end gap-2 mb-4 print:hidden">
-                <button onClick={exportToCSV} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-slate-200">Export CSV</button>
-                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-orange-700 shadow-lg">Print Report (PDF)</button>
+                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-xs font-bold uppercase hover:bg-orange-700 shadow-lg">Print Report</button>
             </div>
-
             <div className="mb-4 bg-slate-800 text-white p-6 rounded-3xl shadow-lg flex justify-between items-center print:bg-white print:text-black print:p-2 print:border-b print:shadow-none">
-               <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Business Week</p>
+               <div className="text-left"><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Business Week</p>
                   <p className="text-lg font-bold">{new Date(weekRange.mon).toLocaleDateString()} — {new Date(weekRange.sun).toLocaleDateString()}</p>
                </div>
                <div className="text-right"><p className="text-[10px] font-black text-orange-400 uppercase mb-1">Total Weekly Coffee</p>
