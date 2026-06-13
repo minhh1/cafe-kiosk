@@ -17,184 +17,166 @@ const STATUS_COLORS: any = {
 export default function ManagerDashboard() {
   const [shifts, setShifts] = useState<any[]>([]);
   const [attendanceLogs, setAttendanceLogs] = useState<any[]>([]);
+  const [coffeeStats, setCoffeeStats] = useState<any[]>([]);
   const [viewMode, setViewMode] = useState<'daily' | 'weekly'>('daily');
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(false);
 
-  // Form States
-  const [showManualModal, setShowManualModal] = useState(false);
   const [activeForm, setActiveForm] = useState<{id: any, type: string} | null>(null);
   const [formTime, setFormTime] = useState("");
   const [formNote, setFormNote] = useState("");
-  const [newShift, setNewShift] = useState({ name: '', start: '', end: '', team: 'FOH Team' });
+  const [dailyCoffee, setDailyCoffee] = useState<string>("0");
+
+  const getWeekRange = (dateStr: string) => {
+    const d = new Date(dateStr);
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const mon = new Date(d.setDate(diff));
+    const sun = new Date(mon);
+    sun.setDate(mon.getDate() + 6);
+    return { mon: mon.toISOString().split('T')[0], sun: sun.toISOString().split('T')[0] };
+  };
 
   const fetchData = async () => {
     setLoading(true);
-    let startDate = selectedDate;
-    let endDate = selectedDate;
-
-    if (viewMode === 'weekly') {
-      const end = new Date(selectedDate);
-      end.setDate(end.getDate() + 6);
-      endDate = end.toISOString().split('T')[0];
-    }
+    const range = getWeekRange(selectedDate);
+    const startDate = viewMode === 'daily' ? selectedDate : range.mon;
+    const endDate = viewMode === 'daily' ? selectedDate : range.sun;
 
     try {
-      // 1. Fetch Deputy Roster
       const rosterRes = await fetch(`/api/roster?startDate=${startDate}&endDate=${endDate}`);
       const deputyData = await rosterRes.json();
-      
-      // 2. Fetch Manual Shifts from Supabase
-      const { data: manualData } = await supabase
-        .from('manual_shifts')
-        .select('*')
-        .gte('shift_date', startDate)
-        .lte('shift_date', endDate);
+      const { data: logs } = await supabase.from('attendance_logs').select('*').order('created_at', { ascending: false });
+      const { data: coffee } = await supabase.from('daily_stats').select('*').gte('date', startDate).lte('date', endDate);
 
-      // 3. Fetch Attendance Logs
-      const { data: logs } = await supabase
-        .from('attendance_logs')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      // Transform Manual Data so it works with our existing UI
-      const formattedManual = (manualData || []).map(m => ({
-        Id: `manual-${m.id}`, // String ID
-        IsManual: true,
-        DisplayName: m.staff_name,
-        StartTime: m.start_time_str,
-        EndTime: m.end_time_str,
-        Team: m.team,
-        Date: m.shift_date,
-        _DPMetaData: { 
-            EmployeeInfo: { DisplayName: m.staff_name },
-            OperationalUnitInfo: { OperationalUnitName: m.team }
-        }
-      }));
-
-      setShifts([...(Array.isArray(deputyData) ? deputyData : []), ...formattedManual]);
+      setShifts(Array.isArray(deputyData) ? deputyData : []);
       setAttendanceLogs(logs || []);
-    } catch (e) { 
-      console.error(e); 
-    } finally { 
-      setLoading(false); 
-    }
+      setCoffeeStats(coffee || []);
+      setDailyCoffee(coffee?.find(c => c.date === selectedDate)?.coffee_kg?.toString() || "0");
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
   };
 
   useEffect(() => { fetchData(); }, [selectedDate, viewMode]);
 
-  const createManualShift = async () => {
-    if (!newShift.name || !newShift.start || !newShift.end) return alert("Please fill all fields");
-    const { error } = await supabase.from('manual_shifts').insert({
-      staff_name: newShift.name,
-      start_time_str: newShift.start,
-      end_time_str: newShift.end,
-      team: newShift.team,
-      shift_date: selectedDate
-    });
-    if (!error) {
-      setShowManualModal(false);
-      setNewShift({ name: '', start: '', end: '', team: 'FOH Team' });
-      fetchData();
-    }
+  const saveCoffee = async (val: string) => {
+    setDailyCoffee(val);
+    await supabase.from('daily_stats').upsert({ date: selectedDate, coffee_kg: parseFloat(val) || 0 });
+  };
+
+  const getLatestLog = (shiftId: any) => attendanceLogs.find(l => l.shift_id.toString() === shiftId.toString() && !l.action_type.startsWith('EDIT'));
+
+  // HELPER: Converts "14:30" to "2:30 pm"
+  const formatTimeString = (timeStr: string) => {
+    if (!timeStr) return "";
+    const [hours, minutes] = timeStr.split(':');
+    const h = parseInt(hours);
+    const ampm = h >= 12 ? 'pm' : 'am';
+    const displayH = h % 12 || 12;
+    return `${displayH}:${minutes} ${ampm}`;
   };
 
   const submitAttendance = async (shift: any, type: string) => {
-    if ((type === 'OTHER' || type === 'LATE') && !formNote.trim()) return alert("Note required");
-    
-    const staffName = shift._DPMetaData?.EmployeeInfo?.DisplayName || "Staff";
+    if ((type === 'OTHER' || type === 'LATE' || type === 'NO_SHOW') && !formNote.trim()) {
+      return alert("Note is mandatory for this status.");
+    }
+    if (type.startsWith('EDIT') && !formTime) {
+        return alert("Please select a time.");
+    }
 
     const { error } = await supabase.from('attendance_logs').insert({
-      shift_id: shift.Id.toString(), // CRUCIAL: ID must be a string
-      staff_name: staffName,
+      shift_id: shift.Id.toString(),
+      staff_name: shift._DPMetaData?.EmployeeInfo?.DisplayName,
       action_type: type,
       notes: formNote,
-      updated_start_time: formTime
+      override_start: type === 'EDIT_START' ? formatTimeString(formTime) : null,
+      override_end: type === 'EDIT_END' ? formatTimeString(formTime) : null
     });
 
-    if (!error) { 
-        setActiveForm(null); 
-        setFormNote(""); 
-        setFormTime(""); 
-        fetchData(); 
-    } else {
-        alert("Error: " + error.message);
-    }
+    if (!error) { setActiveForm(null); setFormNote(""); setFormTime(""); fetchData(); }
   };
 
-  const getDisplayTime = (s: any) => {
-    if (s.IsManual) return `${s.StartTime} — ${s.EndTime}`;
-    const start = new Date(s.StartTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
-    const end = new Date(s.EndTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
-    return `${start} — ${end}`;
+  const renderTimeDisplay = (s: any, isCompact = false) => {
+    const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
+    const startLog = logs.find(l => l.action_type === 'EDIT_START');
+    const endLog = logs.find(l => l.action_type === 'EDIT_END');
+
+    const origStart = new Date(s.StartTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+    const origEnd = new Date(s.EndTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+
+    return (
+      <div className={`${isCompact ? 'text-[10px]' : 'text-lg'} font-bold flex flex-wrap items-center gap-2`}>
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="flex items-center gap-1 group">
+          {startLog ? (
+            <><span className="line-through text-slate-300 font-normal">{origStart}</span><span className="text-blue-600 font-black">({startLog.override_start})</span></>
+          ) : <span className="text-orange-600 group-hover:underline">{origStart}</span>}
+        </button>
+        <span className="text-slate-300">—</span>
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="flex items-center gap-1 group">
+          {endLog ? (
+            <><span className="line-through text-slate-300 font-normal">{origEnd}</span><span className="text-blue-600 font-black">({endLog.override_end})</span></>
+          ) : <span className="text-orange-600 group-hover:underline">{origEnd}</span>}
+        </button>
+      </div>
+    );
   };
 
-  const getDayLabel = (s: any) => {
-    const d = s.IsManual ? new Date(s.Date) : new Date(s.StartTime * 1000);
-    return `${d.toLocaleDateString('en-AU', { weekday: 'short' })} ${d.getDate()}/${d.getMonth()+1}`;
-  };
+  const renderActionButtons = (s: any, currentLog: any) => (
+    <div className="flex flex-wrap gap-1">
+      {['ON_TIME', 'LATE', 'NO_SHOW', 'OTHER'].map(type => (
+        <button key={type} onClick={(e) => { e.stopPropagation(); type !== 'ON_TIME' ? setActiveForm({id: s.Id, type}) : submitAttendance(s, type)}} 
+          className={`px-3 py-2 rounded-lg font-bold text-[9px] uppercase transition-all ${currentLog?.action_type === type ? STATUS_COLORS[type].bg + " text-white scale-110 shadow-lg" : "bg-slate-100 text-slate-400 opacity-40 hover:opacity-100"}`}>
+          {type.replace('_', ' ')}
+        </button>
+      ))}
+    </div>
+  );
 
-  const getLatestLog = (shiftId: any) => attendanceLogs.find(l => l.shift_id.toString() === shiftId.toString());
+  const renderEditForm = (s: any) => {
+    if (!activeForm || activeForm.id !== s.Id) return null;
+    const isTimeEdit = activeForm.type.startsWith('EDIT');
+    const isStatusNote = ['LATE', 'NO_SHOW', 'OTHER'].includes(activeForm.type);
 
-  const getBtnClass = (btnType: string, currentStatus?: string) => {
-    const base = "px-3 py-2 rounded-lg font-bold text-[9px] uppercase transition-all duration-200 ";
-    const theme = STATUS_COLORS[btnType];
-    if (!currentStatus) return base + theme.bg + " text-white hover:opacity-80";
-    const isSelected = btnType === currentStatus;
-    return base + theme.bg + " text-white " + (isSelected ? `ring-2 ring-offset-2 ${theme.ring} scale-110 z-10 shadow-lg` : "opacity-20 grayscale scale-90");
-  };
+    return (
+      <div className="mt-4 p-5 bg-slate-800 rounded-2xl shadow-xl animate-in zoom-in-95 text-left">
+        <h4 className="text-orange-400 text-[10px] font-bold uppercase mb-4 tracking-widest">{activeForm.type.replace('_', ' ')} Details</h4>
+        <div className="flex flex-col gap-3">
+          {isTimeEdit ? (
+            <div className="bg-slate-700 p-4 rounded-xl">
+                 <label className="text-white text-[10px] block mb-2 font-bold uppercase opacity-50">Select New Time</label>
+                 <input type="time" className="w-full p-4 rounded-xl bg-white text-slate-900 font-black text-2xl outline-none" value={formTime} onChange={e => setFormTime(e.target.value)} />
+            </div>
+          ) : (
+            <textarea autoFocus placeholder="Mandatory Reason/Note..." className="p-4 rounded-xl bg-slate-700 text-white h-20 outline-none" value={formNote} onChange={e => setFormNote(e.target.value)} />
+          )}
+          <div className="flex gap-2">
+            <button onClick={() => submitAttendance(s, activeForm.type)} className="flex-1 bg-white text-slate-900 p-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg">Save Correction</button>
+            <button onClick={() => setActiveForm(null)} className="px-6 bg-slate-600 text-white rounded-xl font-bold text-xs uppercase">Cancel</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const renderDailyCard = (s: any) => {
     const log = getLatestLog(s.Id);
     const theme = log ? STATUS_COLORS[log.action_type] : null;
 
     return (
-      <div key={s.Id} className={`bg-white p-5 rounded-2xl shadow-sm border mb-4 transition-all ${log ? theme.border : 'border-slate-200'}`}>
+      <div key={s.Id} className={`bg-white p-5 rounded-2xl shadow-sm border mb-4 transition-all ${theme ? theme.border : 'border-slate-200'}`}>
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex-1">
-            <span className="text-[9px] font-bold bg-slate-100 text-slate-400 px-2 py-0.5 rounded uppercase mb-1 inline-block">{getDayLabel(s)}</span>
             <h2 className="text-2xl font-black text-slate-900 uppercase leading-none">{s._DPMetaData?.EmployeeInfo?.DisplayName}</h2>
-            <p className="text-orange-600 font-bold text-lg">{getDisplayTime(s)}</p>
+            <div className="mt-2 text-left">{renderTimeDisplay(s)}</div>
           </div>
-          <div className="flex flex-wrap gap-1">
-            {['ON_TIME', 'LATE', 'NO_SHOW', 'OTHER'].map(type => (
-              <button 
-                key={type} 
-                onClick={() => (type === 'LATE' || type === 'OTHER' ? setActiveForm({id: s.Id, type}) : submitAttendance(s, type))} 
-                className={getBtnClass(type, log?.action_type)}
-              >
-                {type.replace('_', ' ')}
-              </button>
-            ))}
-          </div>
+          {renderActionButtons(s, log)}
         </div>
-
         {log && theme && (
-          <div className={`mt-4 p-3 rounded-xl border ${theme.light} ${theme.border}`}>
-            <div className="flex justify-between items-center">
-                <p className={`text-xs font-black uppercase ${theme.text}`}>Status: {log.action_type.replace('_', ' ')} {log.updated_start_time && `— Arrived ${log.updated_start_time}`}</p>
-                <span className="text-[9px] text-slate-400 font-bold uppercase">Updated: {new Date(log.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
-            </div>
-            {log.notes && <p className="text-xs text-slate-500 italic mt-1 leading-tight border-t pt-1 border-black/5">"{log.notes}"</p>}
+          <div className={`mt-4 p-3 rounded-xl border text-xs ${theme.light} ${theme.text}`}>
+            <strong>{log.action_type.replace('_', ' ')}:</strong> {log.notes}
           </div>
         )}
-
-        {/* FORM BOX WITH TYPESCRIPT GUARD */}
-        {activeForm && activeForm.id === s.Id && (
-          <div className="mt-4 p-5 bg-slate-800 rounded-2xl shadow-xl animate-in zoom-in-95 duration-200">
-            <h4 className="text-orange-400 text-[10px] font-bold uppercase mb-4 tracking-widest">Provide Reason for {activeForm.type}</h4>
-            <div className="flex flex-col gap-3">
-              {activeForm.type === 'LATE' && (
-                <input type="text" placeholder="Actual Start Time (e.g. 7:15am)" className="p-3 rounded-xl bg-slate-700 text-white border-none outline-none" onChange={e => setFormTime(e.target.value)} />
-              )}
-              <textarea placeholder="Manager's Note (Mandatory)..." className="p-3 rounded-xl bg-slate-700 text-white border-none h-24 outline-none" onChange={e => setFormNote(e.target.value)} />
-              <div className="flex gap-2">
-                <button onClick={() => activeForm && submitAttendance(s, activeForm.type)} className="flex-1 bg-white text-slate-900 p-4 rounded-xl font-black uppercase text-xs tracking-widest shadow-lg">Submit Record</button>
-                <button onClick={() => setActiveForm(null)} className="px-6 bg-slate-600 text-white rounded-xl font-bold text-xs uppercase">Cancel</button>
-              </div>
-            </div>
-          </div>
-        )}
+        {renderEditForm(s)}
       </div>
     );
   };
@@ -207,99 +189,88 @@ export default function ManagerDashboard() {
       grouped[name].push(s);
     });
 
-    return Object.entries(grouped).map(([name, staffShifts]) => (
-      <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6">
-        <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter">{name}</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3">
-          {staffShifts.sort((a, b) => {
-                // Convert everything to a numeric timestamp for sorting
-                const timeA = a.IsManual ? new Date(a.Date).getTime() : a.StartTime * 1000;
-                const timeB = b.IsManual ? new Date(b.Date).getTime() : b.StartTime * 1000;
-                return timeA - timeB;
-            }).map(s => {
-            const log = getLatestLog(s.Id);
-            const theme = log ? STATUS_COLORS[log.action_type] : null;
-            return (
-              <div key={s.Id} className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[110px] transition-all ${log ? `${theme.light} ${theme.border} shadow-inner` : 'bg-slate-50 border-slate-100'}`}>
-                <div>
-                  <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-1">{getDayLabel(s)}</p>
-                  <p className="text-[11px] font-bold text-slate-700 leading-tight">{getDisplayTime(s)}</p>
+    return Object.entries(grouped).map(([name, staffShifts]) => {
+      const activeShiftInRow = staffShifts.find(s => activeForm?.id === s.Id);
+      return (
+        <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6">
+          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter">{name}</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3 mb-2">
+            {staffShifts.sort((a,b) => a.StartTime - b.StartTime).map(s => {
+              const log = getLatestLog(s.Id);
+              const theme = log ? STATUS_COLORS[log.action_type] : null;
+              const isSelected = activeForm?.id === s.Id;
+              return (
+                <div key={s.Id} onClick={() => setActiveForm({id: s.Id, type: 'MARK'})}
+                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[120px] cursor-pointer transition-all ${isSelected ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
+                  <div>
+                    <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-2">{new Date(s.StartTime * 1000).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' })}</p>
+                    {renderTimeDisplay(s, true)}
+                  </div>
+                  {log && theme && <p className={`mt-2 pt-2 border-t ${theme.border} text-[9px] font-black ${theme.text} uppercase`}>{log.action_type}</p>}
                 </div>
-                {log && <p className={`mt-2 pt-2 border-t ${theme.border} text-[10px] font-black ${theme.text} uppercase`}>{log.action_type}</p>}
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
+          {activeShiftInRow && (
+            <div className="mt-4 p-4 bg-slate-50 rounded-xl border-2 border-slate-200 animate-in slide-in-from-top-2">
+               <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Updating Record</p>
+                  {renderActionButtons(activeShiftInRow, getLatestLog(activeShiftInRow.Id))}
+               </div>
+               {renderEditForm(activeShiftInRow)}
+            </div>
+          )}
         </div>
-      </div>
-    ));
+      );
+    });
   };
 
-  const foh = shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "FOH Team");
-  const boh = shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "BOH Team");
+  const weeklyCoffeeTotal = coffeeStats.reduce((acc, curr) => acc + (curr.coffee_kg || 0), 0);
+  const weekRange = getWeekRange(selectedDate);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 font-sans pb-20">
+    <div className="min-h-screen bg-slate-50 text-slate-900 p-4 pb-20 font-sans">
       <div className="max-w-5xl mx-auto">
-        
-        {/* TOP BAR */}
-        <div className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-6">
-          <div>
-            <h1 className="text-3xl font-black uppercase italic tracking-tighter leading-none">Naked Duck Martin Place Log</h1>
+        <header className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col md:flex-row justify-between items-center gap-6">
+          <div className="flex-1">
+            <h1 className="text-3xl font-black uppercase italic tracking-tighter">Martin Place Log</h1>
             <div className="flex gap-2 mt-4">
-              <button onClick={() => setViewMode('daily')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'daily' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Daily View</button>
-              <button onClick={() => setViewMode('weekly')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'weekly' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Weekly View</button>
+              <button onClick={() => setViewMode('daily')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'daily' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Daily</button>
+              <button onClick={() => setViewMode('weekly')} className={`px-8 py-2.5 rounded-full text-xs font-black uppercase transition-all shadow-sm ${viewMode === 'weekly' ? 'bg-slate-800 text-white scale-105' : 'bg-slate-100 text-slate-400'}`}>Weekly</button>
             </div>
           </div>
-          <div className="flex gap-3 items-center">
-             <button onClick={() => setShowManualModal(true)} className="bg-orange-600 text-white px-6 py-3 rounded-2xl font-black text-xs uppercase shadow-lg hover:bg-orange-500 transition-colors">+ Create Shift</button>
-             <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="p-3 border-2 border-slate-200 rounded-2xl font-bold bg-white" />
+          <div className="flex flex-col items-end gap-2">
+            <div className="bg-orange-50 border border-orange-200 p-3 rounded-2xl flex items-center gap-4">
+                <span className="text-[10px] font-black text-orange-800 uppercase tracking-widest">Coffee Used (kg)</span>
+                <input type="number" step="0.1" value={dailyCoffee} onChange={e => saveCoffee(e.target.value)} className="w-20 p-2 rounded-xl font-black text-center bg-white text-orange-600 border-none outline-none shadow-inner" />
+            </div>
+            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="p-3 border-2 border-slate-200 rounded-2xl font-bold bg-white text-slate-900 shadow-sm" />
+          </div>
+        </header>
+
+        {viewMode === 'weekly' && (
+          <div className="mb-8 flex justify-between items-center bg-slate-800 text-white p-6 rounded-3xl shadow-lg">
+             <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1 leading-none">Business Week (Mon-Sun)</p>
+                <p className="text-lg font-bold">{new Date(weekRange.mon).toLocaleDateString()} — {new Date(weekRange.sun).toLocaleDateString()}</p>
+             </div>
+             <div className="text-right"><p className="text-[10px] font-black text-orange-400 uppercase mb-1 leading-none">Weekly Coffee Total</p>
+                <p className="text-4xl font-black text-orange-50">{weeklyCoffeeTotal.toFixed(1)} <span className="text-sm">KG</span></p>
+             </div>
+          </div>
+        )}
+
+        <div className="mb-10">
+          <h2 className="text-xs font-black text-white bg-slate-800 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest">FOH Team</h2>
+          <div className="border-t-4 border-slate-800 pt-6">
+            {viewMode === 'daily' ? shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "FOH Team").map(renderDailyCard) : renderWeeklySection(shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "FOH Team"))}
           </div>
         </div>
-
-        {loading ? (
-          <div className="text-center py-40 font-black text-slate-200 text-4xl animate-pulse tracking-widest uppercase">Refreshing Data</div>
-        ) : (
-          <div className="animate-in fade-in duration-500">
-            <div className="mb-12">
-              <h2 className="text-xs font-black text-white bg-slate-800 px-5 py-1.5 inline-block rounded-t-xl uppercase tracking-widest ml-2 shadow-md">FOH Team</h2>
-              <div className="border-t-4 border-slate-800 pt-6">
-                {viewMode === 'daily' ? foh.map(renderDailyCard) : renderWeeklySection(foh)}
-                {foh.length === 0 && <p className="text-slate-300 p-6 italic">No FOH shifts scheduled.</p>}
-              </div>
-            </div>
-            <div className="mb-12">
-              <h2 className="text-xs font-black text-white bg-orange-600 px-5 py-1.5 inline-block rounded-t-xl uppercase tracking-widest ml-2 shadow-md">BOH Team</h2>
-              <div className="border-t-4 border-orange-600 pt-6">
-                {viewMode === 'daily' ? boh.map(renderDailyCard) : renderWeeklySection(boh)}
-                {boh.length === 0 && <p className="text-slate-300 p-6 italic">No BOH shifts scheduled.</p>}
-              </div>
-            </div>
+        <div>
+          <h2 className="text-xs font-black text-white bg-orange-600 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest">BOH Team</h2>
+          <div className="border-t-4 border-orange-600 pt-6">
+            {viewMode === 'daily' ? shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "BOH Team").map(renderDailyCard) : renderWeeklySection(shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "BOH Team"))}
           </div>
-        )}
-
-        {/* CREATE SHIFT MODAL */}
-        {showManualModal && (
-          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-white p-8 rounded-3xl w-full max-w-md shadow-2xl border border-slate-200">
-              <h2 className="text-2xl font-black mb-6 uppercase italic tracking-tighter">Add Temporary Shift</h2>
-              <div className="space-y-4">
-                <input placeholder="Staff Name" className="w-full p-4 border-2 border-slate-100 rounded-2xl bg-slate-50 outline-none focus:border-orange-500" value={newShift.name} onChange={e => setNewShift({...newShift, name: e.target.value})} />
-                <div className="grid grid-cols-2 gap-4">
-                    <input placeholder="Start (e.g. 7am)" className="p-4 border-2 border-slate-100 rounded-2xl bg-slate-50 outline-none" value={newShift.start} onChange={e => setNewShift({...newShift, start: e.target.value})} />
-                    <input placeholder="End (e.g. 3pm)" className="p-4 border-2 border-slate-100 rounded-2xl bg-slate-50 outline-none" value={newShift.end} onChange={e => setNewShift({...newShift, end: e.target.value})} />
-                </div>
-                <select className="w-full p-4 border-2 border-slate-100 rounded-2xl bg-slate-50 outline-none" value={newShift.team} onChange={e => setNewShift({...newShift, team: e.target.value})}>
-                    <option>FOH Team</option>
-                    <option>BOH Team</option>
-                </select>
-                <div className="flex gap-3 pt-4">
-                    <button onClick={createManualShift} className="flex-1 bg-slate-900 text-white p-4 rounded-2xl font-black uppercase tracking-widest shadow-lg">Create Shift</button>
-                    <button onClick={() => setShowManualModal(false)} className="px-6 bg-slate-100 rounded-2xl font-bold uppercase text-xs">Cancel</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
