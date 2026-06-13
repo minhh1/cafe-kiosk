@@ -22,12 +22,9 @@ export default function ManagerDashboard() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [loading, setLoading] = useState(false);
 
-  // Form States
   const [activeForm, setActiveForm] = useState<{id: any, type: string} | null>(null);
   const [formTime, setFormTime] = useState("");
   const [formNote, setFormNote] = useState("");
-  
-  // Coffee States
   const [coffeeStandard, setCoffeeStandard] = useState<string>("");
   const [coffeeExtra, setCoffeeExtra] = useState<string>("");
   const [coffeeOperator, setCoffeeOperator] = useState<'+' | '-'>('+');
@@ -74,10 +71,7 @@ export default function ManagerDashboard() {
     const std = parseFloat(coffeeStandard) || 10;
     const ext = parseFloat(coffeeExtra) || 0;
     const total = coffeeOperator === '+' ? std + ext : std - ext;
-    await supabase.from('daily_stats').upsert({ 
-        date: selectedDate, coffee_standard: std, coffee_extra: ext, coffee_operator: coffeeOperator,
-        coffee_total: total, is_confirmed: true 
-    });
+    await supabase.from('daily_stats').upsert({ date: selectedDate, coffee_standard: std, coffee_extra: ext, coffee_operator: coffeeOperator, coffee_total: total, is_confirmed: true });
     setIsCoffeeConfirmed(true);
     fetchData();
   };
@@ -102,64 +96,34 @@ export default function ManagerDashboard() {
     if (!error) { setActiveForm(null); setFormNote(""); setFormTime(""); fetchData(); }
   };
 
-  // --- EXPORT CSV WITH COFFEE DATA ---
   const exportToCSV = () => {
-    const headers = ["Date", "Name", "Original Start", "Original End", "Actual Start", "Actual End", "Status", "Notes", "Daily Coffee (kg)"];
-    
-    // Sort shifts by date for a clean report
-    const sortedShifts = [...shifts].sort((a,b) => (a.StartTime || 0) - (b.StartTime || 0));
-
-    const rows = sortedShifts.map(s => {
+    const headers = ["Date", "Name", "Original Start", "Original End", "Actual Start", "Actual End", "Status", "Notes"];
+    const rows = shifts.map(s => {
       const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
-      const sEdit = logs.find(l => l.action_type === 'EDIT_START');
-      const eEdit = logs.find(l => l.action_type === 'EDIT_END');
-      const status = getLatestLog(s.Id);
-      
-      // Calculate date and find confirmed coffee for that date
-      const dateObj = new Date(s.StartTime * 1000);
-      const dateStr = dateObj.toISOString().split('T')[0];
-      const coffeeUsed = coffeeStats.find(c => c.date === dateStr && c.is_confirmed)?.coffee_total || 0;
-
-      const origS = dateObj.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-      const origE = new Date(s.EndTime * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-      
-      return [
-        dateObj.toLocaleDateString(),
-        `"${s._DPMetaData?.EmployeeInfo?.DisplayName}"`, // Wrapped in quotes for CSV safety
-        origS, origE,
-        sEdit?.override_start || origS,
-        eEdit?.override_end || origE,
-        status?.action_type || "PENDING",
-        `"${(status?.notes || "").replace(/"/g, '""')}"`, // Handle quotes inside notes
-        coffeeUsed.toFixed(1)
-      ].join(",");
+      const sE = logs.find(l => l.action_type === 'EDIT_START');
+      const eE = logs.find(l => l.action_type === 'EDIT_END');
+      const st = getLatestLog(s.Id);
+      return [new Date(s.StartTime * 1000).toLocaleDateString(), s._DPMetaData?.EmployeeInfo?.DisplayName, "","", sE?.override_start || "", eE?.override_end || "", st?.action_type || "", st?.notes || ""].join(",");
     });
-
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `Martin_Place_Log_Export_${selectedDate}.csv`);
-    document.body.appendChild(link);
-    link.click();
+    window.open(encodeURI(csvContent));
   };
 
   const renderTimeDisplay = (s: any, isCompact = false) => {
     const logs = attendanceLogs.filter(l => l.shift_id.toString() === s.Id.toString());
-    const startLog = logs.find(l => l.action_type === 'EDIT_START');
-    const endLog = logs.find(l => l.action_type === 'EDIT_END');
-
-    const origStart = new Date(s.StartTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
-    const origEnd = new Date(s.EndTime * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+    const startEdit = logs.find(l => l.action_type === 'EDIT_START');
+    const endEdit = logs.find(l => l.action_type === 'EDIT_END');
+    const fmt = (v: any) => typeof v === 'number' ? new Date(v * 1000).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase() : v;
+    const oS = fmt(s.StartTime); const oE = fmt(s.EndTime);
 
     return (
-      <div className={`${isCompact ? 'text-[10px]' : 'text-lg'} font-bold flex flex-wrap items-center gap-1 print:text-black`}>
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="hover:underline text-left">
-          {startLog ? <><span className="line-through text-slate-300 decoration-slate-400">{origStart}</span> <span className="text-blue-600 font-black">({startLog.override_start})</span></> : <span className="text-orange-600 print:text-black">{origStart}</span>}
+      <div className={`${isCompact ? 'text-[9px] print:text-[7pt]' : 'text-lg'} font-bold flex flex-wrap items-center gap-1 print:text-black print:gap-0`}>
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_START'}); }} className="hover:underline text-left print:no-underline">
+          {startEdit ? <><span className="line-through text-slate-300 print:text-slate-400">{oS}</span> <span className="text-blue-600 print:text-black">({startEdit.override_start})</span></> : <span className="text-orange-600 print:text-black">{oS}</span>}
         </button>
-        <span className="text-slate-300">—</span>
-        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="hover:underline text-left">
-          {endLog ? <><span className="line-through text-slate-300 decoration-slate-400">{origEnd}</span> <span className="text-blue-600 font-black">({endLog.override_end})</span></> : <span className="text-orange-600 print:text-black">{origEnd}</span>}
+        <span className="text-slate-300 print:mx-0.5">—</span>
+        <button onClick={(e) => { e.stopPropagation(); setActiveForm({id: s.Id, type: 'EDIT_END'}); }} className="hover:underline text-left print:no-underline">
+          {endEdit ? <><span className="line-through text-slate-300 print:text-slate-400">{oE}</span> <span className="text-blue-600 print:text-black">({endEdit.override_end})</span></> : <span className="text-orange-600 print:text-black">{oE}</span>}
         </button>
       </div>
     );
@@ -204,24 +168,24 @@ export default function ManagerDashboard() {
     return Object.entries(grouped).map(([name, staffShifts]) => {
       const activeInRow = staffShifts.find(s => activeForm?.id === s.Id);
       return (
-        <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6 print:border-none print:shadow-none print:mb-2">
-          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter print:text-base print:text-left">{name}</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3 mb-2 print:grid-cols-7 print:gap-1">
+        <div key={name} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 mb-6 print:mb-1 print:p-0 print:border-none print:shadow-none print:bg-transparent page-break-inside-avoid">
+          <h3 className="text-xl font-black text-slate-800 uppercase border-b pb-3 mb-4 tracking-tighter print:text-[8pt] print:mb-0.5 print:pb-0.5 print:border-slate-200 print:text-left">{name}</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-3 mb-2 print:grid-cols-7 print:gap-0">
             {staffShifts.sort((a,b) => a.StartTime - b.StartTime).map(s => {
               const log = getLatestLog(s.Id);
               const theme = log ? STATUS_COLORS[log.action_type] : null;
               const isSel = activeForm?.id === s.Id;
               return (
                 <div key={s.Id} onClick={() => setActiveForm({id: s.Id, type: 'MARK'})}
-                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[140px] cursor-pointer transition-all print:min-h-0 print:p-1 print:border-slate-100 ${isSel ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10 print:ring-0 print:scale-100' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
+                  className={`p-3 rounded-xl border text-center flex flex-col justify-between min-h-[140px] cursor-pointer transition-all print:min-h-0 print:p-0.5 print:rounded-none print:border-slate-100 ${isSel ? 'ring-4 ring-orange-500/20 border-orange-500 shadow-md scale-105 z-10 print:ring-0 print:scale-100' : (log && theme ? `${theme.light} ${theme.border}` : 'bg-slate-50 border-slate-100')}`}>
                   <div>
-                    <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-2">{new Date(s.StartTime * 1000).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' })}</p>
+                    <p className="text-[9px] font-black text-slate-400 uppercase leading-none mb-2 print:text-[5pt] print:mb-0">{new Date(s.StartTime * 1000).toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric' })}</p>
                     {renderTimeDisplay(s, true)}
                   </div>
                   {log && theme && (
-                    <div className={`mt-2 pt-2 border-t ${theme.border}`}>
-                      <p className={`text-[9px] font-black ${theme.text} uppercase leading-none mb-1`}>{log.action_type}</p>
-                      {log.notes && <p className="text-[8px] text-slate-500 italic leading-tight line-clamp-3">"{log.notes}"</p>}
+                    <div className={`mt-2 pt-2 border-t ${theme.border} print:mt-0 print:pt-0`}>
+                      <p className={`text-[9px] font-black ${theme.text} uppercase leading-none mb-1 print:text-[6pt]`}>{log.action_type}</p>
+                      {log.notes && <p className="text-[8px] text-slate-500 italic leading-tight line-clamp-3 print:text-[5pt] print:line-clamp-none">"{log.notes}"</p>}
                     </div>
                   )}
                 </div>
@@ -231,7 +195,7 @@ export default function ManagerDashboard() {
           {activeInRow && (
             <div className="mt-4 p-4 bg-slate-50 rounded-xl border-2 border-slate-200 print:hidden">
                <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
-                  <p className="text-[10px] font-black text-slate-500 uppercase">Edit Record For Day</p>
+                  <p className="text-[10px] font-black text-slate-500 uppercase">Updating Record</p>
                   {renderActionButtons(activeInRow, getLatestLog(activeInRow.Id))}
                </div>
                {renderEditForm(activeInRow)}
@@ -251,7 +215,19 @@ export default function ManagerDashboard() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4 pb-20 font-sans print:bg-white print:p-0">
-      <div className="max-w-5xl mx-auto">
+      
+      <style jsx global>{`
+        @media print {
+          @page { size: A4 portrait; margin: 0.2cm; }
+          body { background: white !important; font-size: 8pt; }
+          .no-print { display: none !important; }
+          header { display: none !important; }
+          * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+      `}</style>
+
+      <div className="max-w-5xl mx-auto print:max-w-none print:w-full">
+        {/* APP HEADER - Hidden on Print */}
         <header className="bg-white p-6 rounded-3xl shadow-sm mb-8 border border-slate-200 flex flex-col lg:flex-row justify-between items-center gap-6 print:hidden">
           <div className="flex-1 text-left">
             <h1 className="text-3xl font-black uppercase italic tracking-tighter">Martin Place Log</h1>
@@ -266,78 +242,75 @@ export default function ManagerDashboard() {
               <div className={`p-3 rounded-2xl flex items-center gap-3 transition-colors ${isCoffeeConfirmed ? 'bg-green-50 border-2 border-green-200' : 'bg-orange-50 border border-orange-200'}`}>
                   <div className="flex flex-col items-center">
                       <span className="text-[8px] font-black text-slate-400 uppercase">Standard</span>
-                      <input disabled={isCoffeeConfirmed} type="number" placeholder="10" value={coffeeStandard} onChange={e => {setCoffeeStandard(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none outline-none" />
+                      <input disabled={isCoffeeConfirmed} type="number" placeholder="10" value={coffeeStandard} onChange={e => {setCoffeeStandard(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none" />
                   </div>
                   <button disabled={isCoffeeConfirmed} onClick={() => {setCoffeeOperator(coffeeOperator === '+' ? '-' : '+'); setIsCoffeeConfirmed(false);}} className={`w-8 h-8 rounded-full font-black text-lg flex items-center justify-center transition-colors ${coffeeOperator === '+' ? 'bg-orange-500 text-white' : 'bg-blue-500 text-white'}`}>{coffeeOperator}</button>
                   <div className="flex flex-col items-center">
                       <span className="text-[8px] font-black text-slate-400 uppercase">Extra</span>
-                      <input disabled={isCoffeeConfirmed} type="number" value={coffeeExtra} placeholder="0" onChange={e => {setCoffeeExtra(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none outline-none" />
+                      <input disabled={isCoffeeConfirmed} type="number" value={coffeeExtra} placeholder="0" onChange={e => {setCoffeeExtra(e.target.value); setIsCoffeeConfirmed(false);}} className="w-12 p-1 rounded-lg text-center bg-white font-bold border-none" />
                   </div>
                   <button onClick={handleConfirmCoffee} className={`px-4 py-2 rounded-xl font-black text-[10px] uppercase shadow-md transition-all ${isCoffeeConfirmed ? 'bg-green-600 text-white' : 'bg-orange-600 text-white hover:scale-105'}`}>{isCoffeeConfirmed ? 'Confirmed' : 'Confirm'}</button>
               </div>
             )}
-            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="p-3 border-2 border-slate-200 rounded-2xl font-bold bg-white text-slate-900 shadow-sm" />
+            <input type="date" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="p-3 border-2 border-slate-200 rounded-2xl font-bold bg-white text-slate-900" />
           </div>
         </header>
 
         {viewMode === 'weekly' && (
           <div className="animate-in slide-in-from-top-4 duration-500">
             <div className="flex justify-end gap-2 mb-4 print:hidden">
-                <button onClick={exportToCSV} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-slate-200">Export CSV</button>
-                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase hover:bg-orange-700 shadow-md">Print Report</button>
+                <button onClick={exportToCSV} className="bg-slate-100 text-slate-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase">Export CSV</button>
+                <button onClick={() => window.print()} className="bg-orange-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase shadow-md">Print Portrait PDF</button>
             </div>
             
-            <div className="mb-4 bg-slate-800 text-white p-6 rounded-3xl shadow-lg flex justify-between items-center print:bg-white print:text-black print:p-2 print:border-b print:shadow-none">
-               <div className="text-left"><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Business Week</p>
+            {/* PRINT-ONLY HEADER - VERY SMALL */}
+            <div className="hidden print:block border-b-2 border-slate-900 pb-1 mb-2">
+                <div className="flex justify-between items-end">
+                    <h1 className="text-[12pt] font-black uppercase italic italic">Martin Place Log</h1>
+                    <p className="text-[7pt] font-bold">Week: {new Date(weekRange.mon).toLocaleDateString()} — {new Date(weekRange.sun).toLocaleDateString()}</p>
+                </div>
+                <div className="flex gap-4 mt-1 text-[6pt] font-black text-slate-500">
+                    <span>Weekly Coffee: {confirmedWeeklyCoffee.toFixed(1)}kg</span>
+                    {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((day, idx) => {
+                        const date = new Date(weekRange.mon); date.setDate(date.getDate() + idx);
+                        return <span key={day}>{day}: {getCoffeeForDate(date.toISOString().split('T')[0])}</span>
+                    })}
+                </div>
+            </div>
+
+            {/* SCREEN-ONLY SUMMARY BAR */}
+            <div className="mb-8 bg-slate-800 text-white p-6 rounded-3xl shadow-lg flex justify-between items-center print:hidden">
+               <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Business Week</p>
                   <p className="text-lg font-bold">{new Date(weekRange.mon).toLocaleDateString()} — {new Date(weekRange.sun).toLocaleDateString()}</p>
                </div>
                <div className="text-right"><p className="text-[10px] font-black text-orange-400 uppercase mb-1">Total Weekly Coffee</p>
-                  <p className="text-4xl font-black text-orange-500 print:text-black">{confirmedWeeklyCoffee.toFixed(1)} <span className="text-sm">KG</span></p>
+                  <p className="text-4xl font-black text-orange-500">{confirmedWeeklyCoffee.toFixed(1)} <span className="text-sm">KG</span></p>
                </div>
-            </div>
-            <div className="grid grid-cols-7 gap-2 mb-8 px-2 print:mb-2 print:gap-1">
-                {['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((day, idx) => {
-                    const date = new Date(weekRange.mon); date.setDate(date.getDate() + idx);
-                    return (
-                        <div key={day} className="text-center">
-                            <p className="text-[8px] font-black text-slate-400 uppercase mb-1">{day}</p>
-                            <div className="bg-white border border-slate-200 rounded-lg p-2 shadow-sm font-black text-xs text-slate-700 print:border-slate-100">{getCoffeeForDate(date.toISOString().split('T')[0])}</div>
-                        </div>
-                    )
-                })}
             </div>
           </div>
         )}
 
         {/* FOH TEAM */}
-        <div className="mb-10 text-left print:mb-4">
-          <h2 className="text-xs font-black text-white bg-slate-800 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest print:text-black print:bg-transparent print:p-0 print:border-b print:w-full">Front of House</h2>
-          <div className="border-t-4 border-slate-800 pt-6 print:border-none print:pt-2">
+        <div className="mb-10 text-left print:mb-2">
+          <h2 className="text-xs font-black text-white bg-slate-800 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest print:text-[8pt] print:text-black print:bg-slate-100 print:p-0.5 print:ml-0 print:w-full">Front of House</h2>
+          <div className="border-t-4 border-slate-800 pt-6 print:border-none print:pt-1">
             {viewMode === 'daily' ? shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "FOH Team").map(s => (
-                <div key={s.Id} className={`bg-white p-5 rounded-2xl shadow-sm border mb-4 transition-all ${getLatestLog(s.Id) ? STATUS_COLORS[getLatestLog(s.Id).action_type].border : 'border-slate-200'}`}>
-                    <div className="flex justify-between items-center gap-4 text-left">
-                        <div className="flex-1"><h2 className="text-2xl font-black text-slate-900 uppercase leading-none">{s._DPMetaData?.EmployeeInfo?.DisplayName}</h2><div className="mt-2">{renderTimeDisplay(s)}</div></div>
-                        {renderActionButtons(s, getLatestLog(s.Id))}
-                    </div>
-                    {getLatestLog(s.Id) && <div className={`mt-4 p-3 rounded-xl border text-xs ${STATUS_COLORS[getLatestLog(s.Id).action_type].light} ${STATUS_COLORS[getLatestLog(s.Id).action_type].text}`}><strong>{getLatestLog(s.Id).action_type.replace('_',' ')}:</strong> {getLatestLog(s.Id).notes}</div>}
-                    {renderEditForm(s)}
+                <div key={s.Id} className="bg-white p-5 rounded-2xl shadow-sm border mb-4">
+                    <h2 className="text-2xl font-black text-slate-900 uppercase leading-none">{s._DPMetaData?.EmployeeInfo?.DisplayName}</h2>
+                    <div className="mt-2">{renderTimeDisplay(s)}</div>
                 </div>
             )) : renderWeeklySection(shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "FOH Team"))}
           </div>
         </div>
         
         {/* BOH TEAM */}
-        <div className="text-left print:mt-10">
-          <h2 className="text-xs font-black text-white bg-orange-600 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest print:text-black print:bg-transparent print:p-0 print:border-b print:w-full">Back of House</h2>
-          <div className="border-t-4 border-orange-600 pt-6 print:border-none print:pt-2">
+        <div className="text-left print:mt-4">
+          <h2 className="text-xs font-black text-white bg-orange-600 px-5 py-1.5 inline-block rounded-t-xl uppercase ml-2 tracking-widest print:text-[8pt] print:text-black print:bg-slate-100 print:p-0.5 print:ml-0 print:w-full">Back of House</h2>
+          <div className="border-t-4 border-orange-600 pt-6 print:border-none print:pt-1">
             {viewMode === 'daily' ? shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "BOH Team").map(s => (
-                <div key={s.Id} className={`bg-white p-5 rounded-2xl shadow-sm border mb-4 transition-all ${getLatestLog(s.Id) ? STATUS_COLORS[getLatestLog(s.Id).action_type].border : 'border-slate-200'}`}>
-                    <div className="flex justify-between items-center gap-4 text-left">
-                        <div className="flex-1"><h2 className="text-2xl font-black text-slate-900 uppercase leading-none">{s._DPMetaData?.EmployeeInfo?.DisplayName}</h2><div className="mt-2">{renderTimeDisplay(s)}</div></div>
-                        {renderActionButtons(s, getLatestLog(s.Id))}
-                    </div>
-                    {getLatestLog(s.Id) && <div className={`mt-4 p-3 rounded-xl border text-xs ${STATUS_COLORS[getLatestLog(s.Id).action_type].light} ${STATUS_COLORS[getLatestLog(s.Id).action_type].text}`}><strong>{getLatestLog(s.Id).action_type.replace('_',' ')}:</strong> {getLatestLog(s.Id).notes}</div>}
-                    {renderEditForm(s)}
+                <div key={s.Id} className="bg-white p-5 rounded-2xl shadow-sm border mb-4">
+                    <h2 className="text-2xl font-black text-slate-900 uppercase leading-none">{s._DPMetaData?.EmployeeInfo?.DisplayName}</h2>
+                    <div className="mt-2">{renderTimeDisplay(s)}</div>
                 </div>
             )) : renderWeeklySection(shifts.filter(s => s._DPMetaData?.OperationalUnitInfo?.OperationalUnitName === "BOH Team"))}
           </div>
